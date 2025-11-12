@@ -1,0 +1,32 @@
+services:
+  db:
+    image: pgvector/pgvector:pg16
+    container_name: okc_db
+    environment:
+      POSTGRES_USER: okc
+      POSTGRES_PASSWORD: okc
+      POSTGRES_DB: okc
+    ports: ["5432:5432"]
+    volumes:
+      - okc_db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U okc -d okc"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+  api:
+    build: ./api
+    container_name: okc_api
+    environment:
+      DATABASE_URL: postgresql+psycopg://okc:okc@db:5432/okc
+      EMBEDDING_MODEL: sentence-transformers/all-MiniLM-L6-v2
+    depends_on:
+      db:
+        condition: service_healthy
+    ports: ["8000:8000"]
+    volumes:
+      - ./api:/app
+
+volumes:
+  okc_db:
