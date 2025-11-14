@@ -16,17 +16,31 @@ services:
       retries: 30
 
   api:
-    build: ./api
+    build:
+      context: ./backend
+      dockerfile: api/Dockerfile
     container_name: okc_api
     environment:
       DATABASE_URL: postgresql+psycopg://okc:okc@db:5432/okc
       EMBEDDING_MODEL: sentence-transformers/all-MiniLM-L6-v2
+      PYTHONPATH: /app
     depends_on:
       db:
         condition: service_healthy
     ports: ["8000:8000"]
     volumes:
-      - ./api:/app
+      - ./backend:/app
+
+  frontend:
+    build: ./frontend
+    container_name: okc_frontend
+    ports: ["5173:5173"]
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    command: sh -c "if [ ! -d node_modules ] || [ ! -f node_modules/.bin/vite ]; then npm install; fi && npm run dev -- --host"
+    environment:
+      - NODE_ENV=development
 
 volumes:
   okc_db:
