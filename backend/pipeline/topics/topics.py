@@ -1,4 +1,8 @@
 # topics.py
+# NOTE: This module is not part of Milestone 1 and is not used.
+# The Topic and TopicMember models have been removed from the schema.
+# This file is kept for reference but should not be imported or used.
+
 from __future__ import annotations
 from collections import defaultdict
 from typing import List, Tuple, Optional

@@ -1,58 +1,66 @@
+# pipeline/utils/text_cleaning.py
 from __future__ import annotations
+
+from functools import lru_cache
+from typing import List, Tuple
+
 import re
 
+try:
+    import spacy
+except ImportError:
+    spacy = None
+
+
+@lru_cache(maxsize=1)
+def _get_nlp():
+    """
+    Lazy-load spaCy model once per process.
+
+    You need to install:
+        pip install spacy
+        python -m spacy download en_core_web_sm
+    """
+    if spacy is None:
+        raise RuntimeError("spaCy is not installed. `pip install spacy` and download a model.")
+
+    # We care mostly about sents / deps / noun_chunks.
+    # Disable heavy stuff we don't need.
+    return spacy.load(
+        "en_core_web_sm",
+        disable=["ner", "lemmatizer", "textcat"],
+    )
+
+
+# Fallback regex splitter if spaCy is missing or fails
 _SENT_SPLIT = re.compile(r"(?<=[\.!?])\s+")
-_TOKEN = re.compile(r"\w+|\S")
+_ABBREV_ENDINGS = ("e.g.", "i.e.", "etc.", "U.S.", "U.K.", "U.N.", "Dr.", "Mr.", "Mrs.")
 
-def split_sentences(text: str) -> list[str]:
-    return [s.strip() for s in _SENT_SPLIT.split(text) if s.strip()]
 
-def chunk_text(text: str, target_tokens: int = 600, overlap: int = 80) -> list[str]:
-    sents = split_sentences(text)
-    chunks, cur, cur_len = [], [], 0
-    for s in sents:
-        tokens = _TOKEN.findall(s)
-        if cur_len + len(tokens) > target_tokens and cur:
-            chunks.append(" ".join(cur))
-            # overlap last few sentences
-            cur = cur[-3:] if len(cur) > 3 else cur
-            cur_len = len(_TOKEN.findall(" ".join(cur)))
-        cur.append(s)
-        cur_len += len(tokens)
-    if cur:
-        chunks.append(" ".join(cur))
-    return chunks
+def _regex_sentence_spans(text: str) -> List[Tuple[int, int, str]]:
+    """
+    Basic regex-based fallback: (start, end, sentence_text).
+    Slightly smarter about abbreviations than the original version.
+    """
+    raw = [s for s in _SENT_SPLIT.split(text) if s]
+    if not raw:
+        return []
 
-# ultra-simple entity extractor (NER-lite): proper nouns + capitalized multi-words + code-ish tokens
-_CAP_PHRASE = re.compile(r"\b([A-Z][a-zA-Z0-9\-\_]+(?:\s+[A-Z][a-zA-Z0-9\-\_]+){0,3})\b")
-_CODEISH = re.compile(r"\b([A-Za-z]+[A-Z][A-Za-z0-9]+|[A-Za-z0-9\-\_]{3,})\b")
-
-def extract_candidate_entities(chunk: str) -> list[str]:
-    cands = set()
-    for m in _CAP_PHRASE.finditer(chunk):
-        phrase = m.group(1).strip()
-        if len(phrase.split()) <= 4:
-            cands.add(phrase)
-    # add obvious tech terms that appear in lower case around code-ish tokens
-    for tok in set(_CODEISH.findall(chunk)):
-        if len(tok) > 2 and not tok.islower():
-            cands.add(tok)
-    # normalize basic noise
-    cands = {c.strip(".,:;()[]") for c in cands if c.lower() not in {"the","and","of","for","with","from"}}
-    return sorted(cands)
-
-def canonicalize(name: str) -> str:
-    return re.sub(r"\s+", " ", name.strip()).lower()
-
-def sentence_spans(text: str) -> list[tuple[int, int, str]]:
-    """Return (start, end, sentence_text) for each sentence."""
-    sents = split_sentences(text)
-    spans: list[tuple[int, int, str]] = []
+    merged: list[str] = []
     cursor = 0
-    for s in sents:
+    spans: list[Tuple[int, int, str]] = []
+
+    # First just merge tokens around abbreviations
+    for s in raw:
+        s_strip = s.strip()
+        if merged and merged[-1].strip().endswith(_ABBREV_ENDINGS):
+            merged[-1] = merged[-1] + " " + s_strip
+        else:
+            merged.append(s_strip)
+
+    for s in merged:
         idx = text.find(s, cursor)
         if idx == -1:
-            # fallback: search from the beginning
             idx = text.find(s)
             if idx == -1:
                 continue
@@ -60,4 +68,79 @@ def sentence_spans(text: str) -> list[tuple[int, int, str]]:
         end = idx + len(s)
         spans.append((start, end, s))
         cursor = end
+
     return spans
+
+
+def sentence_spans(text: str) -> List[Tuple[int, int, str]]:
+    """
+    Return sentence spans as (start_char, end_char, sentence_text).
+
+    Primary: spaCy's sentence parser.
+    Fallback: regex-based splitter if spaCy isn't available.
+    """
+    text = text or ""
+    if not text.strip():
+        return []
+
+    # Try spaCy first
+    if spacy is not None:
+        try:
+            nlp = _get_nlp()
+            doc = nlp(text)
+            spans = []
+            for sent in doc.sents:
+                s_text = sent.text.strip()
+                if not s_text:
+                    continue
+                spans.append((sent.start_char, sent.end_char, s_text))
+            if spans:
+                return spans
+        except Exception:
+            # Fall back gracefully if model or parsing explodes
+            pass
+
+    # Fallback
+    return _regex_sentence_spans(text)
+
+
+def split_sentences(text: str) -> list[str]:
+    """
+    Convenience wrapper: just the texts.
+    """
+    return [s for _, _, s in sentence_spans(text)]
+
+
+def chunk_text(text: str, target_tokens: int = 600, overlap: int = 80) -> list[str]:
+    """
+    Re-implement your old chunker on top of the new sentence splitter,
+    so chunks and relations see the same sentence boundaries.
+    """
+    TOKEN = re.compile(r"\w+|\S")
+
+    sents = split_sentences(text)
+    chunks, cur, cur_len = [], [], 0
+    for s in sents:
+        tokens = TOKEN.findall(s)
+        if cur_len + len(tokens) > target_tokens and cur:
+            chunks.append(" ".join(cur))
+            # overlap from end of current chunk
+            overlap_tokens = []
+            total = 0
+            for sent in reversed(cur):
+                toks = TOKEN.findall(sent)
+                total += len(toks)
+                overlap_tokens.append(sent)
+                if total >= overlap:
+                    break
+            cur = list(reversed(overlap_tokens))
+            cur_len = sum(len(TOKEN.findall(x)) for x in cur)
+        cur.append(s)
+        cur_len += len(tokens)
+    if cur:
+        chunks.append(" ".join(cur))
+    return chunks
+
+def canonicalize(name: str) -> str:
+    return re.sub(r"\s+", " ", name.strip()).lower()
+

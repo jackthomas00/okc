@@ -2,4 +2,5 @@
 pycache/
 __pycache__/
 
-extracted/
+extracted/ 
+.cursorignore

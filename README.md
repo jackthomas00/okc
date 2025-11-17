@@ -105,7 +105,7 @@ Included examples:
 ### 1. Clone and run with Docker Compose
 
 ```bash
-git clone https://github.com/yourname/okc
+git clone https://github.com/jackthomas00/okc
 cd okc
 docker compose up --build
 ```
