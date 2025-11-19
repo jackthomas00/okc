@@ -1,0 +1,66 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "okc"
+version = "0.1.0"
+description = "Open Knowledge Compiler - Turn unstructured text into a multi-layer knowledge graph"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+authors = [
+    {name = "Jack Thomas", email = "jack@jack-thomas.com"}
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+]
+
+dependencies = [
+    "fastapi>=0.121.1",
+    "uvicorn[standard]>=0.38.0",
+    "sqlalchemy>=2.0.44",
+    "psycopg[binary]>=3.2.12",
+    "pgvector>=0.4.1",
+    "pydantic>=2.12.4",
+    "pydantic-settings>=2.12.0",
+    "sentence-transformers>=5.1.2",
+    "numpy>=2.3.4",
+    "spacy>=3.8.8",
+    "requests>=2.31.0",
+    "pyyaml>=6.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "black>=23.0.0",
+    "ruff>=0.1.0",
+]
+
+[project.scripts]
+okc-api = "okc_api.main:app"
+okc-wiki-crawler = "okc_cli.wiki_crawler:crawl"
+okc-wiki-crawler-adv = "okc_cli.wiki_crawler_adv:crawl"
+okc-pipeline = "okc_pipeline.pipeline_runner:main"
+
+[tool.setuptools]
+packages = ["okc_core", "okc_pipeline", "okc_api", "okc_cli"]
+
+[tool.setuptools.package-data]
+okc_core = ["migrations/*.sql"]
+
+[tool.black]
+line-length = 100
+target-version = ['py310']
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+

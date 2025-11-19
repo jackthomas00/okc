@@ -1,0 +1,26 @@
+sources:
+  # Wikipedia API source - uses Wikipedia API crawler
+  # - type: wikipedia_api
+  #   domain: "en"
+  #   seeds: ["Transformer (machine learning)", "Self-attention"]
+  #   max_docs: 8000
+  #   max_hops: 2  # BFS depth (optional, default: 2)
+  
+  # Extracted folder source - uses extracted folder (dump ingest)
+  - type: extracted_folder
+    path: "extracted"  # path to folder containing extracted JSON files
+    max_docs: 100
+
+stages:
+  - name: chunk
+    params: {target_tokens: 600, overlap: 80}
+  - name: embed
+    model: sentence-transformers/all-MiniLM-L6-v2
+  - name: sentences  # Split chunks into sentences using spaCy
+  - name: entities  # Extract entities using spaCy NER and map to ontology types
+  # - name: topics
+  #   method: hdbscan
+  # - name: claims
+  #   pattern_ruleset: "default"
+  # - name: relations
+  #   min_support: 2

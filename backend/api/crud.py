@@ -2,8 +2,9 @@ import numpy as np
 from sqlalchemy import select, exists, update, Float as SQLFloat, cast
 from sqlalchemy.dialects.postgresql import insert as pg_upsert
 from sqlalchemy.orm import Session
-from api.models import Document, Chunk, Entity, EntityChunk
+from api.models import Document, Chunk, Entity
 from pipeline.utils.text_cleaning import extract_candidate_entities, canonicalize
+from pipeline.utils.spacy_processing import make_doc, merge_entity_candidates
 from pipeline.embeddings.embedder import embed_texts
 from pipeline.ingestion.ingest_utils import normalize_text, content_sha1, word_count
 from pipeline.embeddings.doc_embeddings import aggregate_chunk_embeddings, embedding_to_list
@@ -11,12 +12,19 @@ from pipeline.embeddings.doc_embeddings import aggregate_chunk_embeddings, embed
 DUPLICATE_SIMILARITY_THRESHOLD = 0.95
 DUPLICATE_CANDIDATE_K = 5
 
-def upsert_entity(session: Session, name: str) -> int:
-    canon = canonicalize(name)
-    stmt = pg_upsert(Entity).values(name=name, canonical_label=canon).on_conflict_do_nothing(index_elements=[Entity.name])
+def upsert_entity(session: Session, canonical_name: str) -> int:
+    """
+    Upsert an entity with canonical_name and normalized_name.
+    Returns the entity ID.
+    """
+    normalized = canonicalize(canonical_name)
+    stmt = pg_upsert(Entity).values(
+        canonical_name=canonical_name,
+        normalized_name=normalized
+    ).on_conflict_do_nothing(index_elements=[Entity.canonical_name])
     session.execute(stmt)
     # fetch existing or just inserted
-    entity_id = session.scalar(select(Entity.id).where(Entity.name == name))
+    entity_id = session.scalar(select(Entity.id).where(Entity.canonical_name == canonical_name))
     return entity_id
 
 def doc_exists_by_hash(session: Session, h: str) -> bool:
@@ -102,12 +110,9 @@ def update_document_embedding(session: Session, document_id: int, embedding: lis
         update(Document).where(Document.id == document_id).values(doc_embedding=payload)
     )
 
-def extract_and_link_entities(session: Session, chunk_id: int, chunk_text: str):
-    names = extract_candidate_entities(chunk_text)
-    for n in names:
-        eid = upsert_entity(session, n)
-        pos = chunk_text.find(n)
-        ec = EntityChunk(entity_id=eid, chunk_id=chunk_id,
-                         span_start=pos if pos >= 0 else None,
-                         span_end=(pos + len(n)) if pos >= 0 else None)
-        session.add(ec)
+# extract_and_link_entities removed - will be reimplemented for Milestone 1
+# This function will need to:
+# 1. Split chunk into sentences (Sentence model)
+# 2. Extract entities and create EntityMention records linked to sentences
+# def extract_and_link_entities(session: Session, chunk_id: int, chunk_text: str):
+#     ...

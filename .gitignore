@@ -1,5 +1,9 @@
 .venv
+.env
 pycache/
 __pycache__/
 
-extracted/
+extracted/ 
+.cursorignore
+Z_Reference/
+dump_ingest_state.json

@@ -3,25 +3,25 @@ services:
     image: pgvector/pgvector:pg16
     container_name: okc_db
     environment:
-      POSTGRES_USER: okc
-      POSTGRES_PASSWORD: okc
-      POSTGRES_DB: okc
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
     ports: ["5432:5432"]
     volumes:
       - okc_db:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U okc -d okc"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
       interval: 5s
       timeout: 3s
       retries: 30
 
   api:
     build:
-      context: ./backend
-      dockerfile: api/Dockerfile
+      context: .
+      dockerfile: okc_api/Dockerfile
     container_name: okc_api
     environment:
-      DATABASE_URL: postgresql+psycopg://okc:okc@db:5432/okc
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
       EMBEDDING_MODEL: sentence-transformers/all-MiniLM-L6-v2
       PYTHONPATH: /app
     depends_on:
@@ -29,14 +29,18 @@ services:
         condition: service_healthy
     ports: ["8000:8000"]
     volumes:
-      - ./backend:/app
+      - ./okc_core:/app/okc_core
+      - ./okc_pipeline:/app/okc_pipeline
+      - ./okc_api:/app/okc_api
+      - ./okc_cli:/app/okc_cli
+      - ./extracted:/app/extracted
 
   frontend:
-    build: ./frontend
+    build: ./okc_ui
     container_name: okc_frontend
     ports: ["5173:5173"]
     volumes:
-      - ./frontend:/app
+      - ./okc_ui:/app
       - /app/node_modules
     command: sh -c "if [ ! -d node_modules ] || [ ! -f node_modules/.bin/vite ]; then npm install; fi && npm run dev -- --host"
     environment:
