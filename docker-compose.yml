@@ -34,6 +34,7 @@ services:
       - ./okc_api:/app/okc_api
       - ./okc_cli:/app/okc_cli
       - ./extracted:/app/extracted
+      - ./tests:/app/tests
 
   frontend:
     build: ./okc_ui

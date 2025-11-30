@@ -25,7 +25,7 @@ okc/
 ├── okc_api/         # FastAPI REST API
 ├── okc_cli/         # CLI entrypoints
 ├── okc_ui/          # React explorer UI
-├── examples/         # Example scripts ("run OKC on mini-wiki", "on arXiv")
+├── examples/        # Example scripts ("run OKC on mini-wiki", "on arXiv")
 └── docs/            # Architecture, how-to, diagrams
 ```
 

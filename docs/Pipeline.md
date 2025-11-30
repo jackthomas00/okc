@@ -72,6 +72,12 @@ Mark a sentence as a `ClaimSentence` if:
 
 This is coarse, but focusing only on “claim-like verbs + ≥2 entities” already cuts noise.
 
+**Implementation notes:**
+
+* Implemented in `okc_pipeline.stage_03_claims.claim_detector`.
+* Persists to the `claim_sentence` table with a coarse `score` and metadata about the verbs/hedges hit.
+* Enabled by adding a `claims` stage entry in `pipeline.yaml`.
+
 ---
 
 ### Stage 4 – Relation candidate extraction (dependency-driven, not regex-driven)
@@ -214,4 +220,3 @@ Now expose this in your API (FastAPI):
 
      * A subgraph (entities + relations + evidence sentences) returned as JSON.
      * That becomes its “ground truth context” instead of raw chunks only.
-

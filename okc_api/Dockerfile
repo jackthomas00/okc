@@ -10,9 +10,10 @@ COPY okc_core/ ./okc_core/
 COPY okc_pipeline/ ./okc_pipeline/
 COPY okc_api/ ./okc_api/
 COPY okc_cli/ ./okc_cli/
-RUN pip install --no-cache-dir -e .
+# Install package with dev dependencies for testing
+RUN pip install --no-cache-dir -e ".[dev]"
 
-RUN python -m spacy download en_core_web_sm
+RUN python -m spacy download en_core_web_md
 
 ENV PYTHONPATH=/app
 CMD ["uvicorn", "okc_api.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]

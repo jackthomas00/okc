@@ -40,6 +40,8 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "pytest>=7.0.0",
+    "pytest-cov>=4.0.0",  # For coverage reports
+    "httpx>=0.24.0",  # Required for FastAPI TestClient
     "black>=23.0.0",
     "ruff>=0.1.0",
 ]
