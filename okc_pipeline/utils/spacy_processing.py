@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from functools import lru_cache
 from typing import Iterable, Sequence
@@ -15,12 +16,29 @@ SPACY_MODEL_CANDIDATES = [
 ]
 
 
+def _get_configured_model_name() -> str | None:
+    """Get the spaCy model name from environment variable if set."""
+    return os.environ.get("SPACY_MODEL")
+
+
 @lru_cache(maxsize=1)
 def get_spacy_model() -> Language:
     """
     Load and cache a spaCy Language pipeline.
-    Tries progressively larger English models, falling back to a blank model.
+    Uses configured model from SPACY_MODEL env var if set, otherwise tries
+    progressively larger English models, falling back to a blank model.
     """
+    # Check for configured model first
+    configured_model = _get_configured_model_name()
+    if configured_model:
+        try:
+            # We only need tagger + parser for sents/noun chunks; drop NER for perf.
+            return spacy.load(configured_model, exclude=["ner"])
+        except OSError as exc:
+            # If configured model fails, fall through to candidates
+            pass
+    
+    # Try candidates in order
     last_error: Exception | None = None
     for name in SPACY_MODEL_CANDIDATES:
         try:
@@ -42,9 +60,21 @@ def get_spacy_model() -> Language:
 def get_spacy_model_with_ner() -> Language:
     """
     Load and cache a spaCy Language pipeline WITH NER enabled.
-    Tries progressively larger English models, falling back to a blank model.
+    Uses configured model from SPACY_MODEL env var if set, otherwise tries
+    progressively larger English models, falling back to a blank model.
     Used for Stage 2 entity extraction.
     """
+    # Check for configured model first
+    configured_model = _get_configured_model_name()
+    if configured_model:
+        try:
+            # Load with NER enabled for entity extraction
+            return spacy.load(configured_model)
+        except OSError as exc:
+            # If configured model fails, fall through to candidates
+            pass
+    
+    # Try candidates in order
     last_error: Exception | None = None
     for name in SPACY_MODEL_CANDIDATES:
         try:
