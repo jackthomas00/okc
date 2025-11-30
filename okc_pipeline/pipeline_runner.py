@@ -187,7 +187,7 @@ def iter_json_lines(path: str, start_offset: int = 0) -> Iterable[tuple[int, dic
 class PipelineRunner:
     """Runs the pipeline based on YAML configuration."""
     
-    def __init__(self, config_path: str, skip_stages: Optional[List[str]] = None, skip_sourcing: bool = False):
+    def __init__(self, config_path: str, skip_stages: Optional[List[str]] = None, skip_sourcing: bool = False, clear_db: bool = False):
         """
         Initialize pipeline runner with YAML config.
         
@@ -195,12 +195,14 @@ class PipelineRunner:
             config_path: Path to YAML configuration file
             skip_stages: Optional list of stage names to skip (e.g., ["entities", "topics"])
             skip_sourcing: If True, skip document sourcing and process existing data from database
+            clear_db: If True, clear all documents from database before running (cascades to all downstream data)
         """
         with open(config_path, "r") as f:
             self.config = yaml.safe_load(f)
         self.sources = self.config.get("sources", [])
         all_stages = self.config.get("stages", [])
         self.skip_sourcing = skip_sourcing
+        self.clear_db = clear_db
         
         # Filter out skipped stages
         if skip_stages:
@@ -212,11 +214,17 @@ class PipelineRunner:
         else:
             self.stages = all_stages
         
+        # Extract global config
+        global_config = self.config.get("config", {})
+        self.spacy_model = global_config.get("spacy_model")
+        
         # Extract stage configurations
         self.chunk_params = {}
         self.embed_model = None
         self.enable_sentences = False
         self.enable_entities = False
+        self.enable_claims = False
+        self.enable_relations = False
         
         for stage in self.stages:
             if stage.get("name") == "chunk":
@@ -227,6 +235,15 @@ class PipelineRunner:
                 self.enable_sentences = True
             elif stage.get("name") == "entities":
                 self.enable_entities = True
+            elif stage.get("name") == "claims":
+                self.enable_claims = True
+            elif stage.get("name") == "relations":
+                self.enable_relations = True
+        
+        # Set spaCy model if specified (via environment variable)
+        # This must be done before importing spacy modules
+        if self.spacy_model:
+            os.environ["SPACY_MODEL"] = self.spacy_model
         
         # Set embedding model if specified (via environment variable)
         # This must be done before importing embedder modules
@@ -337,6 +354,42 @@ class PipelineRunner:
         
         db.flush()  # Flush to get IDs, but don't commit yet (let run() handle commits)
     
+    def detect_claim_sentences_for_chunks(self, db, chunk_ids: List[int]):
+        """Detect claim sentences using Stage 3 heuristics."""
+        from okc_core.models import Sentence
+        from okc_pipeline.stage_03_claims.claim_detector import detect_claim_sentences
+        
+        if not chunk_ids:
+            return
+        
+        sentence_id_rows = db.query(Sentence.id).filter(Sentence.chunk_id.in_(chunk_ids)).all()
+        sentence_ids = [sid for (sid,) in sentence_id_rows]
+        if not sentence_ids:
+            print("[Pipeline] No sentences found for claim detection")
+            return
+        
+        stats = detect_claim_sentences(db, sentence_ids)
+        print(f"[Pipeline] Claim detection: processed {stats['sentences_processed']} sentences → {stats['claims_detected']} claims")
+        db.flush()
+    
+    def extract_relations_for_chunks(self, db, chunk_ids: List[int]):
+        """Extract relations from sentences in chunks."""
+        from okc_core.models import Sentence
+        from okc_pipeline.state_04_relations.relation_extractor import extract_relations_for_sentences
+        
+        if not chunk_ids:
+            return
+        
+        sentence_id_rows = db.query(Sentence.id).filter(Sentence.chunk_id.in_(chunk_ids)).all()
+        sentence_ids = [sid for (sid,) in sentence_id_rows]
+        if not sentence_ids:
+            print("[Pipeline] No sentences found for relation extraction")
+            return
+        
+        stats = extract_relations_for_sentences(db, sentence_ids)
+        print(f"[Pipeline] Relation extraction: processed {stats['sentences_processed']} sentences → {stats['relations_extracted']} relations")
+        db.flush()
+    
     def process_extracted_folder_source(self, source_config: Dict[str, Any]) -> Iterable[Dict[str, Any]]:
         """Process extracted folder source."""
         from okc_pipeline.stage_00_ingestion.doc_filters import keep_doc
@@ -432,15 +485,33 @@ class PipelineRunner:
             else:
                 self.extract_entities_for_chunks(db, cids)
         
+        # Stage: Claim sentence detection (requires sentences + entities)
+        if self.enable_claims:
+            if not self.enable_sentences:
+                print("[Pipeline] Warning: claims stage requires sentences stage, skipping claims")
+            elif not self.enable_entities:
+                print("[Pipeline] Warning: claims stage requires entities stage, skipping claims")
+            else:
+                self.detect_claim_sentences_for_chunks(db, cids)
+        
+        # Stage: Relation extraction (requires sentences + entities)
+        if self.enable_relations:
+            if not self.enable_sentences:
+                print("[Pipeline] Warning: relations stage requires sentences stage, skipping relations")
+            elif not self.enable_entities:
+                print("[Pipeline] Warning: relations stage requires entities stage, skipping relations")
+            else:
+                self.extract_relations_for_chunks(db, cids)
+        
         return doc_id
     
     def process_existing_data(self, db):
         """Process existing data from database (when sourcing is skipped)."""
-        from okc_core.models import Document, Chunk, Sentence
+        from okc_core.models import Chunk, Sentence
         
         # Determine what we need to process based on enabled stages
-        needs_chunks = self.enable_sentences or self.enable_entities
-        needs_sentences = self.enable_entities
+        needs_chunks = self.enable_sentences or self.enable_entities or self.enable_claims or self.enable_relations
+        needs_sentences = self.enable_entities or self.enable_claims or self.enable_relations
         
         if not needs_chunks and not needs_sentences:
             print("[Pipeline] No stages enabled that require existing data")
@@ -470,6 +541,8 @@ class PipelineRunner:
                 else:
                     print("[Pipeline] All chunks already have sentences")
             
+            sentence_ids_for_claims: list[int] = []
+            
             # Process entities if needed
             if self.enable_entities:
                 # Check which sentences don't have entities yet
@@ -477,6 +550,8 @@ class PipelineRunner:
                 if not all_sentences:
                     print("[Pipeline] No sentences found. Run sentences stage first.")
                     return
+                
+                sentence_ids_for_claims = [s.id for s in all_sentences]
                 
                 # Check which sentences already have entity mentions
                 from okc_core.models import EntityMention
@@ -495,8 +570,97 @@ class PipelineRunner:
                     db.commit()
                 else:
                     print("[Pipeline] All sentences already have entities")
+            elif self.enable_claims:
+                sentence_ids_for_claims = [
+                    sid for (sid,) in db.query(Sentence.id).filter(Sentence.chunk_id.in_(chunk_ids)).all()
+                ]
+            
+            if self.enable_claims:
+                if not sentence_ids_for_claims:
+                    print("[Pipeline] No sentences available for claim detection. Run sentences/entities first.")
+                else:
+                    from okc_pipeline.stage_03_claims.claim_detector import detect_claim_sentences
+                    stats = detect_claim_sentences(db, sentence_ids_for_claims)
+                    print(f"[Pipeline] Claim detection: processed {stats['sentences_processed']} sentences → {stats['claims_detected']} claims")
+                    db.commit()
+            
+            if self.enable_relations:
+                if not sentence_ids_for_claims:
+                    print("[Pipeline] No sentences available for relation extraction. Run sentences/entities first.")
+                else:
+                    from okc_pipeline.state_04_relations.relation_extractor import extract_relations_for_sentences
+                    stats = extract_relations_for_sentences(db, sentence_ids_for_claims)
+                    print(f"[Pipeline] Relation extraction: processed {stats['sentences_processed']} sentences → {stats['relations_extracted']} relations")
+                    db.commit()
         else:
             print("[Pipeline] No processing needed for existing data")
+    
+    def clear_database(self, db):
+        """Clear all documents from database and all related data.
+        
+        Note: Entities and Relations are not directly linked to Documents via CASCADE,
+        so they must be explicitly deleted. The deletion order matters due to foreign key constraints:
+        1. RelationEvidence (references Relations and Sentences)
+        2. Relations (they reference Entities)
+        3. EntityMentions (they reference both Entities and Sentences - must be deleted before Entities)
+        4. Entities (they're referenced by Relations and EntityMentions)
+        5. Documents (cascades to Chunks → Sentences → ClaimSentences)
+        """
+        from okc_core.models import (
+            Document, Entity, Relation, EntityMention, RelationEvidence
+        )
+        
+        print("[Pipeline] Clearing database...")
+        
+        # Count before deletion for reporting
+        doc_count = db.query(Document).count()
+        entity_count = db.query(Entity).count()
+        relation_count = db.query(Relation).count()
+        mention_count = db.query(EntityMention).count()
+        evidence_count = db.query(RelationEvidence).count()
+        
+        # Delete in order to respect foreign key constraints
+        # Use flush() between deletions to ensure constraints are checked
+        
+        # 1. Delete RelationEvidence first (references Relations and Sentences)
+        if evidence_count > 0:
+            db.query(RelationEvidence).delete()
+            db.flush()
+            print(f"[Pipeline] Deleted {evidence_count} relation evidence records")
+        
+        # 2. Delete Relations (they reference Entities, must be deleted before Entities)
+        if relation_count > 0:
+            db.query(Relation).delete()
+            db.flush()
+            print(f"[Pipeline] Deleted {relation_count} relations")
+        
+        # 3. Delete Documents (cascades to Chunks → Sentences → EntityMentions, ClaimSentences)
+        # This will delete EntityMentions via CASCADE, so we don't need to delete them explicitly
+        if doc_count > 0:
+            db.query(Document).delete()
+            db.flush()
+            print(f"[Pipeline] Deleted {doc_count} documents (cascaded to chunks, sentences, mentions, claims)")
+        
+        # 4. Delete Entities (now that EntityMentions are gone via Document CASCADE)
+        if entity_count > 0:
+            db.query(Entity).delete()
+            db.flush()
+            print(f"[Pipeline] Deleted {entity_count} entities")
+        
+        db.commit()
+        
+        # Verify deletion completed
+        remaining_docs = db.query(Document).count()
+        remaining_entities = db.query(Entity).count()
+        remaining_relations = db.query(Relation).count()
+        
+        if doc_count == 0 and entity_count == 0 and relation_count == 0:
+            print("[Pipeline] Database is already empty")
+        else:
+            print(f"[Pipeline] Database cleared: {doc_count} documents, {entity_count} entities, {relation_count} relations")
+            if remaining_docs > 0 or remaining_entities > 0 or remaining_relations > 0:
+                print(f"[Pipeline] WARNING: Some records remain - {remaining_docs} documents, {remaining_entities} entities, {remaining_relations} relations")
+                raise RuntimeError("Database clearing incomplete - some records remain. This may cause constraint violations.")
     
     def run(self):
         """Run the pipeline."""
@@ -504,6 +668,12 @@ class PipelineRunner:
         
         db = SessionLocal()
         try:
+            # Clear database if requested (must be done before any processing)
+            if self.clear_db:
+                self.clear_database(db)
+                db.close()  # Close the old session
+                db = SessionLocal()  # Get a fresh session after clearing
+            
             if self.skip_sourcing:
                 print("[Pipeline] Skipping sourcing - processing existing data from database")
                 self.process_existing_data(db)
@@ -567,6 +737,9 @@ Examples:
   
   # Only run entity extraction on existing sentences
   okc-pipeline pipeline.yaml --skip-sourcing --skip chunk --skip embed --skip sentences --skip topics
+  
+  # Clear database and re-process everything (useful when changing chunking/entity extraction methods)
+  okc-pipeline pipeline.yaml --clear-db
         """
     )
     parser.add_argument(
@@ -586,6 +759,13 @@ Examples:
         dest="skip_sourcing",
         help="Skip document sourcing and process existing data from database. Useful when data is already ingested."
     )
+    parser.add_argument(
+        "--clear-db",
+        action="store_true",
+        dest="clear_db",
+        help="Clear all documents from database before running (cascades to chunks, sentences, entities, etc.). "
+             "Useful when changing chunking parameters or entity extraction methods to force re-processing."
+    )
     
     args = parser.parse_args()
     
@@ -595,10 +775,9 @@ Examples:
         sys.exit(1)
     
     skip_stages = args.skip_stages if args.skip_stages else None
-    runner = PipelineRunner(config_path, skip_stages=skip_stages, skip_sourcing=args.skip_sourcing)
+    runner = PipelineRunner(config_path, skip_stages=skip_stages, skip_sourcing=args.skip_sourcing, clear_db=args.clear_db)
     runner.run()
 
 
 if __name__ == "__main__":
     main()
-

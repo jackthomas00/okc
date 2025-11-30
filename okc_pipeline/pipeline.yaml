@@ -11,6 +11,12 @@ sources:
     path: "extracted"  # path to folder containing extracted JSON files
     max_docs: 100
 
+# Global configuration
+config:
+  # spaCy model to use (e.g., "en_core_web_sm", "en_core_web_md", "en_core_web_lg")
+  # If not specified, will try candidates in order: sm, md, lg
+  spacy_model: "en_core_web_md"
+
 stages:
   - name: chunk
     params: {target_tokens: 600, overlap: 80}
@@ -18,9 +24,7 @@ stages:
     model: sentence-transformers/all-MiniLM-L6-v2
   - name: sentences  # Split chunks into sentences using spaCy
   - name: entities  # Extract entities using spaCy NER and map to ontology types
+  - name: claims  # Stage 3: mark claim-like sentences using deterministic rules
+  - name: relations  # Stage 4: extract relations between entities
   # - name: topics
   #   method: hdbscan
-  # - name: claims
-  #   pattern_ruleset: "default"
-  # - name: relations
-  #   min_support: 2
