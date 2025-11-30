@@ -11,7 +11,7 @@ This package contains:
 
 from okc_core.config import settings
 from okc_core.db import Base, engine, SessionLocal
-from okc_core.models import Document, Chunk, Entity, Sentence, EntityMention
+from okc_core.models import Document, Chunk, Entity, Sentence, EntityMention, ClaimSentence
 from okc_core.schemas import (
     IngestRequest,
     BulkIngestRequest,
@@ -31,6 +31,7 @@ __all__ = [
     "Entity",
     "Sentence",
     "EntityMention",
+    "ClaimSentence",
     "IngestRequest",
     "BulkIngestRequest",
     "IngestResult",
@@ -38,4 +39,3 @@ __all__ = [
     "EntitySearchResult",
     "UnifiedSearchResult",
 ]
-

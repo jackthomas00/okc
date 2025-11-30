@@ -1,7 +1,17 @@
 from sqlalchemy import (
-    Column, Integer, String, Text, ForeignKey, DateTime, UniqueConstraint, Index, func
+    Column,
+    Integer,
+    String,
+    Text,
+    ForeignKey,
+    DateTime,
+    UniqueConstraint,
+    Index,
+    Boolean,
+    Float,
+    func,
+    JSON,
 )
-from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import relationship, Mapped, mapped_column
 from pgvector.sqlalchemy import Vector
 from okc_core.db import Base
@@ -56,6 +66,7 @@ class Sentence(Base):
 
     chunk: Mapped[Chunk] = relationship(back_populates="sentences")
     mentions: Mapped[list["EntityMention"]] = relationship(back_populates="sentence")
+    claim: Mapped["ClaimSentence"] = relationship(back_populates="sentence", uselist=False)
 
     __table_args__ = (
         Index("idx_sentence_order_index", "chunk_id", "order_index"),
@@ -67,7 +78,7 @@ class Entity(Base):
     canonical_name: Mapped[str] = mapped_column(Text)
     type: Mapped[str | None] = mapped_column(String(64))
     normalized_name: Mapped[str | None] = mapped_column(Text)
-    extra_metadata = Column(JSONB, nullable=True)
+    extra_metadata = Column(JSON, nullable=True)
 
     mentions: Mapped[list["EntityMention"]] = relationship(back_populates="entity")
 
@@ -88,3 +99,50 @@ class EntityMention(Base):
 
     entity: Mapped[Entity] = relationship(back_populates="mentions")
     sentence: Mapped[Sentence] = relationship(back_populates="mentions")
+
+
+class ClaimSentence(Base):
+    __tablename__ = "claim_sentence"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    sentence_id: Mapped[int] = mapped_column(
+        ForeignKey("sentence.id", ondelete="CASCADE"), unique=True, index=True
+    )
+    is_claim: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    details = Column(JSON, nullable=True)
+
+    sentence: Mapped[Sentence] = relationship(back_populates="claim")
+
+    __table_args__ = (
+        Index("idx_claim_sentence_is_claim", "is_claim"),
+    )
+
+
+class Relation(Base):
+    __tablename__ = "relation"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    head_entity_id: Mapped[int] = mapped_column(ForeignKey("entity.id", ondelete="CASCADE"), index=True)
+    tail_entity_id: Mapped[int] = mapped_column(ForeignKey("entity.id", ondelete="CASCADE"), index=True)
+    relation_type: Mapped[str] = mapped_column(String(64), index=True)
+    confidence: Mapped[float] = mapped_column(Float, nullable=False, default=1.0)
+    created_at: Mapped[DateTime] = mapped_column(DateTime, server_default=func.now())
+
+    head_entity: Mapped["Entity"] = relationship("Entity", foreign_keys=[head_entity_id])
+    tail_entity: Mapped["Entity"] = relationship("Entity", foreign_keys=[tail_entity_id])
+    evidence: Mapped[list["RelationEvidence"]] = relationship(back_populates="relation")
+
+    __table_args__ = (
+        Index("idx_relation_head_tail_type", "head_entity_id", "tail_entity_id", "relation_type"),
+    )
+
+
+class RelationEvidence(Base):
+    __tablename__ = "relation_evidence"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    relation_id: Mapped[int] = mapped_column(ForeignKey("relation.id", ondelete="CASCADE"), index=True)
+    sentence_id: Mapped[int] = mapped_column(ForeignKey("sentence.id", ondelete="CASCADE"), index=True)
+    explanation: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[DateTime] = mapped_column(DateTime, server_default=func.now())
+
+    relation: Mapped[Relation] = relationship(back_populates="evidence")
+    sentence: Mapped[Sentence] = relationship()
