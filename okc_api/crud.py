@@ -96,22 +96,77 @@ def distance_to_cosine(distance: float | None) -> float:
         return -1.0
     return 1.0 - (d * d) / 2.0
 
+def _normalize_embedding(embedding) -> list[float]:
+    """Normalize embedding to a list of floats, handling various input types."""
+    if embedding is None:
+        return None
+    if isinstance(embedding, str):
+        import json
+        embedding = json.loads(embedding)
+    if isinstance(embedding, np.ndarray):
+        return embedding.tolist()
+    if isinstance(embedding, list):
+        return [float(x) for x in embedding]
+    return list(embedding)
+
+def _cosine_distance(vec1: list[float] | np.ndarray, vec2: list[float] | np.ndarray) -> float:
+    """Compute cosine distance between two vectors."""
+    v1 = np.asarray(vec1, dtype=np.float32)
+    v2 = np.asarray(vec2, dtype=np.float32)
+    # Cosine distance = 1 - cosine similarity
+    dot_product = np.dot(v1, v2)
+    norm1 = np.linalg.norm(v1)
+    norm2 = np.linalg.norm(v2)
+    if norm1 == 0 or norm2 == 0:
+        return 1.0
+    cosine_sim = dot_product / (norm1 * norm2)
+    return 1.0 - cosine_sim
+
+def _is_postgresql(session: Session) -> bool:
+    """Check if the database is PostgreSQL."""
+    return session.bind.dialect.name == "postgresql"
+
 def find_duplicate_by_embedding(session: Session, embedding: list[float], threshold: float = DUPLICATE_SIMILARITY_THRESHOLD,
                                 k: int = DUPLICATE_CANDIDATE_K) -> tuple[int, float] | None:
     if not embedding:
         return None
-    dist_raw = Document.doc_embedding.op("<=>")(embedding)
-    dist_expr = cast(dist_raw, SQLFloat).label("distance")
-    stmt = (
-        select(Document.id, dist_expr)
-        .where(Document.doc_embedding.is_not(None))
-        .order_by(dist_raw.asc())
-        .limit(k)
-    )
-    for doc_id, distance in session.execute(stmt):
-        similarity = distance_to_cosine(distance)
-        if similarity >= threshold:
-            return (doc_id, similarity)
+    
+    if _is_postgresql(session):
+        # Use PostgreSQL's <=> operator for cosine distance
+        dist_raw = Document.doc_embedding.op("<=>")(embedding)
+        dist_expr = cast(dist_raw, SQLFloat).label("distance")
+        stmt = (
+            select(Document.id, dist_expr)
+            .where(Document.doc_embedding.is_not(None))
+            .order_by(dist_raw.asc())
+            .limit(k)
+        )
+        for doc_id, distance in session.execute(stmt):
+            similarity = distance_to_cosine(distance)
+            if similarity >= threshold:
+                return (doc_id, similarity)
+    else:
+        # For SQLite and other databases, compute cosine distance in Python
+        stmt = (
+            select(Document.id, Document.doc_embedding)
+            .where(Document.doc_embedding.is_not(None))
+            .limit(k * 10)  # Fetch more candidates since we can't order by distance in SQL
+        )
+        candidates = []
+        for doc_id, doc_embedding in session.execute(stmt):
+            normalized_embedding = _normalize_embedding(doc_embedding)
+            if normalized_embedding is None:
+                continue
+            distance = _cosine_distance(embedding, normalized_embedding)
+            similarity = distance_to_cosine(distance)
+            candidates.append((doc_id, similarity, distance))
+        
+        # Sort by distance and check threshold
+        candidates.sort(key=lambda x: x[2])  # Sort by distance
+        for doc_id, similarity, _ in candidates[:k]:
+            if similarity >= threshold:
+                return (doc_id, similarity)
+    
     return None
 
 def ingest_document(session: Session, title: str, url: str | None, text: str, lang: str | None = "en",

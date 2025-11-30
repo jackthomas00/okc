@@ -1,7 +1,9 @@
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, Depends, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 from sqlalchemy import select, func, Float as SQLFloat, cast
+import numpy as np
 from okc_core.db import Base, engine, SessionLocal
 from okc_core.models import Document, Chunk, Entity, Sentence, EntityMention
 from okc_core.schemas import IngestRequest, BulkIngestRequest, IngestResult, SearchResponseItem, EntitySearchResult, UnifiedSearchResult
@@ -12,7 +14,50 @@ from okc_api.crud import ingest_document, add_chunks_with_embeddings, update_doc
 from okc_pipeline.stage_00_embeddings.embedder import embed_texts
 from okc_pipeline.stage_00_embeddings.doc_embeddings import compute_doc_embedding
 
-app = FastAPI(title="OKC API")
+
+def _is_postgresql(session: Session) -> bool:
+    """Check if the database is PostgreSQL."""
+    return session.bind.dialect.name == "postgresql"
+
+
+def _normalize_embedding(embedding) -> list[float] | None:
+    """Normalize embedding to a list of floats, handling various input types."""
+    if embedding is None:
+        return None
+    if isinstance(embedding, str):
+        import json
+        embedding = json.loads(embedding)
+    if isinstance(embedding, np.ndarray):
+        return embedding.tolist()
+    if isinstance(embedding, list):
+        return [float(x) for x in embedding]
+    return list(embedding)
+
+
+def _cosine_distance(vec1: list[float] | np.ndarray, vec2: list[float] | np.ndarray) -> float:
+    """Compute cosine distance between two vectors."""
+    v1 = np.asarray(vec1, dtype=np.float32)
+    v2 = np.asarray(vec2, dtype=np.float32)
+    # Cosine distance = 1 - cosine similarity
+    dot_product = np.dot(v1, v2)
+    norm1 = np.linalg.norm(v1)
+    norm2 = np.linalg.norm(v2)
+    if norm1 == 0 or norm2 == 0:
+        return 1.0
+    cosine_sim = dot_product / (norm1 * norm2)
+    return 1.0 - cosine_sim
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup
+    Base.metadata.create_all(bind=engine)
+    yield
+    # Shutdown (if needed in the future)
+    pass
+
+
+app = FastAPI(title="OKC API", lifespan=lifespan)
 
 # Configure CORS
 app.add_middleware(
@@ -40,10 +85,6 @@ def get_db():
         raise
     finally:
         db.close()
-
-@app.on_event("startup")
-def startup():
-    Base.metadata.create_all(bind=engine)
 
 @app.post("/ingest", response_model=IngestResult)
 def ingest(payload: IngestRequest, db: Session = Depends(get_db)):
@@ -106,26 +147,53 @@ def chunk_vector_search(
     # embed and convert to plain Python list so it can be bound as a pgvector parameter
     qvec = embed_texts([q])[0].tolist()
 
-    # cosine distance operator: <=> (smaller = more similar)
-    # Cast to Float to ensure SQLAlchemy treats it as a float, not a vector
-    dist_raw = Chunk.embedding.op("<=>")(qvec)
-    dist_expr = cast(dist_raw, SQLFloat).label("distance")
+    if _is_postgresql(db):
+        # Use PostgreSQL's <=> operator for cosine distance
+        dist_raw = Chunk.embedding.op("<=>")(qvec)
+        dist_expr = cast(dist_raw, SQLFloat).label("distance")
 
-    stmt = (
-        select(
-            Chunk.id,
-            Chunk.document_id,
-            Document.title,
-            Chunk.text,
-            dist_expr,
+        stmt = (
+            select(
+                Chunk.id,
+                Chunk.document_id,
+                Document.title,
+                Chunk.text,
+                dist_expr,
+            )
+            .select_from(Chunk)
+            .join(Document, Document.id == Chunk.document_id)
+            .order_by(dist_raw.asc())
+            .limit(k)
         )
-        .select_from(Chunk)
-        .join(Document, Document.id == Chunk.document_id)
-        .order_by(dist_raw.asc())
-        .limit(k)
-    )
 
-    rows = db.execute(stmt).all()
+        rows = db.execute(stmt).all()
+    else:
+        # For SQLite and other databases, compute cosine distance in Python
+        stmt = (
+            select(
+                Chunk.id,
+                Chunk.document_id,
+                Document.title,
+                Chunk.text,
+                Chunk.embedding,
+            )
+            .select_from(Chunk)
+            .join(Document, Document.id == Chunk.document_id)
+            .limit(k * 10)  # Fetch more candidates since we can't order by distance in SQL
+        )
+        
+        candidates = []
+        for cid, did, title, text, embedding in db.execute(stmt).all():
+            normalized_embedding = _normalize_embedding(embedding)
+            if normalized_embedding is None:
+                continue
+            distance = _cosine_distance(qvec, normalized_embedding)
+            candidates.append((cid, did, title, text, distance))
+        
+        # Sort by distance and take top k
+        candidates.sort(key=lambda x: x[4])  # Sort by distance
+        rows = [(cid, did, title, text, dist) for cid, did, title, text, dist in candidates[:k]]
+
     out: list[SearchResponseItem] = []
 
     for cid, did, title, text, dist in rows:
@@ -195,15 +263,35 @@ def unified_search(
         )
     
     # Search documents by doc_embedding similarity
-    doc_dist_raw = Document.doc_embedding.op("<=>")(qvec)
-    doc_dist_expr = cast(doc_dist_raw, SQLFloat).label("distance")
-    doc_stmt = (
-        select(Document.id, Document.title, Document.text, doc_dist_expr)
-        .where(Document.doc_embedding.isnot(None))
-        .order_by(doc_dist_raw.asc())
-        .limit(k)
-    )
-    doc_rows = db.execute(doc_stmt).all()
+    if _is_postgresql(db):
+        doc_dist_raw = Document.doc_embedding.op("<=>")(qvec)
+        doc_dist_expr = cast(doc_dist_raw, SQLFloat).label("distance")
+        doc_stmt = (
+            select(Document.id, Document.title, Document.text, doc_dist_expr)
+            .where(Document.doc_embedding.isnot(None))
+            .order_by(doc_dist_raw.asc())
+            .limit(k)
+        )
+        doc_rows = db.execute(doc_stmt).all()
+    else:
+        # For SQLite and other databases, compute cosine distance in Python
+        doc_stmt = (
+            select(Document.id, Document.title, Document.text, Document.doc_embedding)
+            .where(Document.doc_embedding.isnot(None))
+            .limit(k * 10)  # Fetch more candidates since we can't order by distance in SQL
+        )
+        candidates = []
+        for did, title, text, embedding in db.execute(doc_stmt).all():
+            normalized_embedding = _normalize_embedding(embedding)
+            if normalized_embedding is None:
+                continue
+            distance = _cosine_distance(qvec, normalized_embedding)
+            candidates.append((did, title, text, distance))
+        
+        # Sort by distance and take top k
+        candidates.sort(key=lambda x: x[3])  # Sort by distance
+        doc_rows = [(did, title, text, dist) for did, title, text, dist in candidates[:k]]
+    
     for did, title, text, dist in doc_rows:
         try:
             d = float(dist or 1.0)
