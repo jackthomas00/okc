@@ -4,7 +4,7 @@ import pytest
 from sqlalchemy.orm import Session
 
 from okc_core.models import Document, Chunk, Sentence, Entity, EntityMention, Relation, RelationEvidence
-from okc_pipeline.state_04_relations.relation_extractor import extract_relations_for_sentences
+from okc_pipeline.stage_04_relations.relation_extractor import extract_relations_for_sentences
 from okc_pipeline.stage_03_claims.claim_detector import detect_claim_sentences
 from okc_pipeline.stage_02_entities.entity_extractor import extract_entities_for_sentences
 from okc_pipeline.stage_01_sentences.sentence_splitter import split_chunk_into_sentences

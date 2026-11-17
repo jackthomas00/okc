@@ -375,7 +375,7 @@ class PipelineRunner:
     def extract_relations_for_chunks(self, db, chunk_ids: List[int]):
         """Extract relations from sentences in chunks."""
         from okc_core.models import Sentence
-        from okc_pipeline.state_04_relations.relation_extractor import extract_relations_for_sentences
+        from okc_pipeline.stage_04_relations.relation_extractor import extract_relations_for_sentences
         
         if not chunk_ids:
             return
@@ -588,7 +588,7 @@ class PipelineRunner:
                 if not sentence_ids_for_claims:
                     print("[Pipeline] No sentences available for relation extraction. Run sentences/entities first.")
                 else:
-                    from okc_pipeline.state_04_relations.relation_extractor import extract_relations_for_sentences
+                    from okc_pipeline.stage_04_relations.relation_extractor import extract_relations_for_sentences
                     stats = extract_relations_for_sentences(db, sentence_ids_for_claims)
                     print(f"[Pipeline] Relation extraction: processed {stats['sentences_processed']} sentences → {stats['relations_extracted']} relations")
                     db.commit()

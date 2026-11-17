@@ -7,7 +7,7 @@ from typing import Sequence
 from sqlalchemy.orm import Session, selectinload
 
 from okc_core.models import EntityMention, Relation, RelationEvidence, Sentence
-from okc_pipeline.state_04_relations.relation_rules import RELATION_PATTERNS
+from okc_pipeline.stage_04_relations.relation_rules import RELATION_PATTERNS
 from okc_pipeline.utils.spacy_processing import make_doc
 
 
