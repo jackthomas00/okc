@@ -1,0 +1,1 @@
+The Transformer is a neural network architecture introduced by researchers at Google. The Transformer depends on self-attention. Self-attention is an attention mechanism. BERT requires large amounts of pretraining data. BERT was evaluated on the GLUE benchmark.
